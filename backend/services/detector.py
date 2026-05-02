@@ -64,17 +64,20 @@ class RemoteDetector:
         if progress_cb is None:
             return
         url = f"{self._base_url}/progress/{job_id}"
-        while not stop_event.wait(5.0):
+        interval = 2.0
+        while not stop_event.wait(interval):
+            interval = 5.0
             try:
                 r = requests.get(url, timeout=10)
                 if not r.ok:
+                    logger.warning("[job %s] progress poll got HTTP %d", job_id, r.status_code)
                     continue
                 frames = int(r.json().get("frames_processed", 0))
+                logger.info("[job %s] remote progress: %d frames", job_id, frames)
                 if frames > 0:
                     progress_cb(frames)
-                    logger.info("[job %s] progress: %d frames", job_id, frames)
-            except (requests.RequestException, ValueError):
-                continue
+            except (requests.RequestException, ValueError) as exc:
+                logger.warning("[job %s] progress poll error: %s", job_id, exc)
 
     def predict_video(
         self,
