@@ -82,7 +82,7 @@ npm run dev                    # http://localhost:5173
 | GET    | `/health`                     | Liveness + model-loaded flag + class names    |
 | POST   | `/predict`                    | `multipart/form-data` field `file` = video    |
 | GET    | `/results/{job_id}/video`     | Streams the annotated MP4                     |
-| DELETE | `/results/{job_id}`           | Removes the cached result                     |
+| DELETE | `/results/{job_id}`           | Removes the cached result from server         |
 
 `POST /predict` response:
 
