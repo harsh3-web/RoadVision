@@ -24,6 +24,7 @@ Required before you start:
 
 
 # %% [cell 3] FastAPI app
+import asyncio
 import shutil
 import subprocess
 import time
@@ -32,7 +33,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import torch
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from ultralytics import YOLO
 
@@ -51,6 +52,9 @@ print("Device:", device, "GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_
 model = YOLO(MODEL_PATH)
 app = FastAPI(title="Pothole GPU Inference")
 
+# Updated by the inference loop, read by GET /progress.
+progress_state: dict[str, int] = {}
+
 
 @app.get("/health")
 def health():
@@ -63,18 +67,15 @@ def health():
     }
 
 
-@app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    job_id = uuid.uuid4().hex
-    run_dir = WORK_DIR / job_id
-    run_dir.mkdir()
-    src_path = run_dir / (file.filename or "video.mp4")
+@app.get("/progress/{job_id}")
+def progress(job_id: str):
+    return {"frames_processed": progress_state.get(job_id, 0)}
 
-    with src_path.open("wb") as out:
-        while chunk := await file.read(1024 * 1024):
-            out.write(chunk)
 
+def _run_inference(src_path: Path, job_id: str, run_dir: Path) -> dict:
     started = time.perf_counter()
+    progress_state[job_id] = 0
+
     results = model.track(
         source=str(src_path),
         conf=CONF_THRESHOLD,
@@ -99,6 +100,7 @@ async def predict(file: UploadFile = File(...)):
             classes = r.boxes.cls.cpu().numpy()
             for obj_id, cls in zip(ids, classes):
                 unique_ids[int(cls)].add(int(obj_id))
+        progress_state[job_id] = frames
 
     annotated = None
     for ext in (".mp4", ".avi"):
@@ -145,6 +147,25 @@ async def predict(file: UploadFile = File(...)):
         "frames_processed": frames,
         "inference_seconds": round(elapsed, 2),
     }
+
+
+@app.post("/predict")
+async def predict(file: UploadFile = File(...), job_id: str = Form(default=None)):
+    rid = job_id or uuid.uuid4().hex
+    run_dir = WORK_DIR / rid
+    run_dir.mkdir(exist_ok=True)
+    src_path = run_dir / (file.filename or "video.mp4")
+
+    with src_path.open("wb") as out:
+        while chunk := await file.read(1024 * 1024):
+            out.write(chunk)
+
+    # Run the blocking inference loop in a threadpool so /progress can be
+    # served concurrently on the event loop.
+    try:
+        return await asyncio.to_thread(_run_inference, src_path, rid, run_dir)
+    finally:
+        progress_state.pop(rid, None)
 
 
 @app.get("/video/{job_id}")
